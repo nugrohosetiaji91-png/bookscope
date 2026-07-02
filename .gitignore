@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+poly_data/
+*.gz
+*.jsonl
+.env
