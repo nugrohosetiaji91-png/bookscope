@@ -21,7 +21,9 @@ Prediction-market orderbooks have structural quirks (asymmetric depth, wall plac
 
 - **Lossless capture**: full snapshots (`book`) and incremental updates (`price_change`) are both applied to a local book, and the reconstructed state is recorded on every event
 - **Thread-safe**: single lock around book state, per-writer locks for file output
-- **Self-healing**: WebSocket auto-reconnects; market discovery re-polls every 5s and rolls to the next 5-minute window automatically
+- **Silent-drop detection**: a WebSocket can stay "connected" while the server stops sending - invisible gaps are fatal for a recorder. A single global watchdog tracks message age and force-closes the socket after 35s of silence
+- **Single connection owner**: one `ws_loop()` thread owns the socket lifecycle with exponential backoff (max 30s); close handlers never spawn reconnects, which prevents parallel-socket buildup and ping storms across session rollovers
+- **Session rollover**: market discovery re-polls every 5s and rolls to the next 5-minute window by closing the socket - the loop reconnects and resubscribes with fresh tokens
 - **Bounded footprint**: gzip streaming writers, periodic flush, live dashboard shows disk usage and 24h size projection
 
 ## Usage

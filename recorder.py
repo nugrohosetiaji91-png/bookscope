@@ -46,6 +46,7 @@ DEPTH_LEVELS   = 10          # record top 10 levels
 FLUSH_INTERVAL = 5           # flush to disk every 5 seconds
 STATS_INTERVAL = 30          # print stats every 30 seconds
 OBI_DEPTH      = 5           # OBI calculation depth
+WS_QUIET_RECONNECT_S = 35    # force reconnect if no WS message for this long
 
 # --- GLOBALS -----------------------------------------------------
 state = {
@@ -58,6 +59,7 @@ state = {
     "ws_connected": False,
     "current_slug": None,
 }
+ws_state = {"last_msg": 0, "retries": 0, "ws_ref": None, "watchdog_on": False}
 stats = defaultdict(int)
 lock = threading.Lock()
 running = True
@@ -377,13 +379,16 @@ def _record_book_state(asset_id, book_key, event_type):
 
 def on_ws_message(ws, message):
     try:
+        ws_state["last_msg"] = time.time()
+        if ws_state["retries"]:
+            ws_state["retries"] = 0  # data flowing = healthy connection, reset backoff
         msgs = json.loads(message)
         if isinstance(msgs, list):
             for m in msgs:
                 process_book_update(m)
         elif isinstance(msgs, dict):
             process_book_update(msgs)
-    except Exception as e:
+    except Exception:
         stats["errors"] += 1
 
 def on_ws_open(ws):
@@ -391,43 +396,88 @@ def on_ws_open(ws):
         yes_token = state["yes_token"]
         no_token = state["no_token"]
 
-    assets = []
-    if yes_token:
-        assets.append(yes_token)
-    if no_token:
-        assets.append(no_token)
-
+    assets = [t for t in (yes_token, no_token) if t]
     if assets:
-        sub = {"type": "MARKET", "assets_ids": assets}
-        ws.send(json.dumps(sub))
+        ws.send(json.dumps({"type": "MARKET", "assets_ids": assets}))
         print(f"[WS] Connected - subscribed to {len(assets)} assets")
+        ws_state["last_msg"] = time.time()
         with lock:
             state["ws_connected"] = True
         stats["connects"] += 1
 
 def on_ws_close(ws, code, msg):
+    # NOTE: no reconnect here. ws_loop() owns the connection lifecycle;
+    # reconnecting from the close handler spawns parallel sockets over time.
     print(f"[WS] Closed: {code}")
     with lock:
         state["ws_connected"] = False
-    if running:
-        time.sleep(3)
-        start_ws()
 
 def on_ws_error(ws, error):
     print(f"[WS] Error: {error}")
     stats["ws_errors"] += 1
 
-def start_ws():
-    ws = websocket.WebSocketApp(
-        POLY_WS_URL,
-        on_message=on_ws_message,
-        on_open=on_ws_open,
-        on_close=on_ws_close,
-        on_error=on_ws_error,
-    )
-    t = threading.Thread(target=ws.run_forever, kwargs={"ping_interval": 20, "ping_timeout": 10}, daemon=True)
-    t.start()
-    return ws
+def ws_msg_age():
+    return time.time() - ws_state.get("last_msg", 0)
+
+def ws_watchdog():
+    """Single global watchdog thread (multiple watchdogs per reconnect cause ping storms).
+
+    Detects silent drops: a socket can stay "connected" while the server stops
+    sending data. If no message arrives within WS_QUIET_RECONNECT_S, force-close
+    the socket so ws_loop() reconnects. Critical for a recorder - an undetected
+    silent drop is an invisible gap in the dataset.
+    """
+    while running:
+        with lock:
+            connected = state["ws_connected"]
+        if connected and ws_msg_age() > WS_QUIET_RECONNECT_S:
+            print(f"[WS] watchdog: quiet {ws_msg_age():.0f}s - forcing reconnect")
+            ws_reconnect()
+        time.sleep(5)
+
+def ws_loop():
+    """Single persistent connection owner: connect, block in run_forever,
+    reconnect with exponential backoff when the socket dies."""
+    while running:
+        with lock:
+            ready = state["yes_token"] and state["no_token"]
+        if ready:
+            break
+        time.sleep(1)
+
+    while running:
+        try:
+            ws = websocket.WebSocketApp(
+                POLY_WS_URL,
+                on_message=on_ws_message,
+                on_open=on_ws_open,
+                on_close=on_ws_close,
+                on_error=on_ws_error,
+            )
+            ws_state["ws_ref"] = ws
+            ws_state["last_msg"] = time.time()
+            if not ws_state["watchdog_on"]:
+                ws_state["watchdog_on"] = True
+                threading.Thread(target=ws_watchdog, daemon=True).start()
+            ws.run_forever(ping_interval=20, ping_timeout=15)
+        except Exception as e:
+            print(f"[WS] loop error: {e}")
+        if not running:
+            break
+        ws_state["retries"] += 1
+        delay = min(2 ** ws_state["retries"], 30)
+        print(f"[WS] reconnect in {delay}s (attempt {ws_state['retries']})")
+        time.sleep(delay)
+
+def ws_reconnect():
+    """Close the current socket; ws_loop() handles the reconnect.
+    Used on session rollover (new tokens) and by the watchdog."""
+    ws_ref = ws_state.get("ws_ref")
+    if ws_ref:
+        try:
+            ws_ref.close()
+        except Exception:
+            pass
 
 # --- SESSION TRACKING --------------------------------------------
 
@@ -526,6 +576,7 @@ def main():
     last_market_check = 0
 
     print("[INIT] Looking for active BTC 5-min market...")
+    threading.Thread(target=ws_loop, daemon=True).start()
 
     while running:
         now = time.time()
@@ -564,7 +615,7 @@ def main():
                         with lock:
                             state["yes_book"] = {"bids": {}, "asks": {}}
                             state["no_book"] = {"bids": {}, "asks": {}}
-                        start_ws()
+                        ws_reconnect()  # ws_loop() reconnects and resubscribes with new tokens
                 else:
                     if stats["sessions"] == 0:
                         print(f"[WAIT] Market not found for {slug}, retrying...")
