@@ -2,24 +2,37 @@
 
 High-fidelity **orderbook recorder** for Polymarket prediction markets, built for market-microstructure research. It attaches to the rolling BTC 5-minute up/down markets and records every single orderbook event to disk - so you can study market-maker behavior, liquidity dynamics, and signal quality offline, on real data, instead of guessing.
 
-## Architecture
+## How it works
 
 ```mermaid
-flowchart LR
-    PM[Polymarket CLOB<br/>WebSocket] -->|book / price_change| WS[ws_loop<br/>single connection owner]
-    GA[Gamma API] -->|market discovery<br/>every 5s| MAIN[main loop]
-    MAIN -->|session rollover:<br/>close socket| WS
-    WD[watchdog<br/>silent-drop detector] -->|quiet > 35s:<br/>force close| WS
-    WS --> BOOK[local book<br/>snapshot + incremental]
-    BOOK --> OBI[OBI / spread /<br/>volume metrics]
-    BOOK --> LIQ[liquidity event<br/>detector]
-    OBI --> W1[book_update.jsonl.gz]
-    OBI --> W2[obi_ts.jsonl.gz]
-    LIQ --> W3[liq_events.jsonl.gz]
-    MAIN --> W4[sessions.jsonl.gz]
+flowchart TD
+    A[Start] --> B[Compute current 5-min window slug<br/>btc-updown-5m-TIMESTAMP]
+    B --> C{Market found on<br/>Gamma API?}
+    C -->|no, retry 5s| B
+    C -->|yes| D[Store YES/NO token IDs<br/>+ session end time]
+    D --> E[ws_loop: connect to CLOB WebSocket<br/>subscribe to both tokens]
+    E --> F[Receive event]
+    F --> G{Event type?}
+    G -->|book| H[Full snapshot:<br/>replace local book]
+    G -->|price_change| I[Incremental:<br/>update/remove levels]
+    H --> J[Recompute state:<br/>OBI, spread, best bid/ask, volumes]
+    I --> J
+    J --> K[Compare vs previous snapshot:<br/>detect PULL / ADD / NEW_WALL]
+    K --> L[Write 3 streams:<br/>book_update, obi_ts, liq_events]
+    L --> F
+
+    M[Main loop, every 5s] --> N{New 5-min window?}
+    N -->|yes| O[Fetch new tokens,<br/>clear books, close socket]
+    O --> E
+    N -->|no| M
+
+    P[Watchdog, every 5s] --> Q{No WS message<br/>for 35s?}
+    Q -->|yes: silent drop| R[Force-close socket]
+    R --> E
+    Q -->|no| P
 ```
 
-One socket, one owner: `ws_loop()` reconnects with exponential backoff whenever the socket dies - whether killed by the server, the watchdog (silence), or a session rollover (new market tokens).
+Three loops run in parallel: the **event loop** (receive, rebuild book, record), the **main loop** (rolls to the next 5-minute market window), and the **watchdog** (kills silently-dead sockets). All reconnection funnels through one place - `ws_loop()` - with exponential backoff.
 
 ## What it records
 
