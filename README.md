@@ -2,6 +2,25 @@
 
 High-fidelity **orderbook recorder** for Polymarket prediction markets, built for market-microstructure research. It attaches to the rolling BTC 5-minute up/down markets and records every single orderbook event to disk - so you can study market-maker behavior, liquidity dynamics, and signal quality offline, on real data, instead of guessing.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    PM[Polymarket CLOB<br/>WebSocket] -->|book / price_change| WS[ws_loop<br/>single connection owner]
+    GA[Gamma API] -->|market discovery<br/>every 5s| MAIN[main loop]
+    MAIN -->|session rollover:<br/>close socket| WS
+    WD[watchdog<br/>silent-drop detector] -->|quiet > 35s:<br/>force close| WS
+    WS --> BOOK[local book<br/>snapshot + incremental]
+    BOOK --> OBI[OBI / spread /<br/>volume metrics]
+    BOOK --> LIQ[liquidity event<br/>detector]
+    OBI --> W1[book_update.jsonl.gz]
+    OBI --> W2[obi_ts.jsonl.gz]
+    LIQ --> W3[liq_events.jsonl.gz]
+    MAIN --> W4[sessions.jsonl.gz]
+```
+
+One socket, one owner: `ws_loop()` reconnects with exponential backoff whenever the socket dies - whether killed by the server, the watchdog (silence), or a session rollover (new market tokens).
+
 ## What it records
 
 Four gzipped JSONL streams, rotated hourly under `./poly_data/<date>/`:
