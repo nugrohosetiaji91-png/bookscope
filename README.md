@@ -8,37 +8,15 @@ High-fidelity **orderbook recorder** for Polymarket prediction markets, built fo
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A[Start] --> B[Compute current 5-min window slug<br/>btc-updown-5m-TIMESTAMP]
-    B --> C{Market found on<br/>Gamma API?}
-    C -->|no, retry 5s| B
-    C -->|yes| D[Store YES/NO token IDs<br/>+ session end time]
-    D --> E[ws_loop: connect to CLOB WebSocket<br/>subscribe to both tokens]
-    E --> F[Receive event]
-    F --> G{Event type?}
-    G -->|book| H[Full snapshot:<br/>replace local book]
-    G -->|price_change| I[Incremental:<br/>update/remove levels]
-    H --> J[Recompute state:<br/>OBI, spread, best bid/ask, volumes]
-    I --> J
-    J --> K[Compare vs previous snapshot:<br/>detect PULL / ADD / NEW_WALL]
-    K --> L[Write 3 streams:<br/>book_update, obi_ts, liq_events]
-    L --> F
 
-    M[Main loop, every 5s] --> N{New 5-min window?}
-    N -->|yes| O[Fetch new tokens,<br/>clear books, close socket]
-    O --> E
-    N -->|no| M
-
-    P[Watchdog, every 5s] --> Q{No WS message<br/>for 35s?}
-    Q -->|yes: silent drop| R[Force-close socket]
-    R --> E
-    Q -->|no| P
-```
 
 Three loops run in parallel: the **event loop** (receive, rebuild book, record), the **main loop** (rolls to the next 5-minute market window), and the **watchdog** (kills silently-dead sockets). All reconnection funnels through one place - `ws_loop()` - with exponential backoff.
 
 ## What it records
+
+<p align="center">
+  <img src="assets/bookscope_arch.png" alt="Bookscope Architecture" width="100%">
+</p>
 
 Four gzipped JSONL streams, rotated hourly under `./poly_data/<date>/`:
 
