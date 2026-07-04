@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Project Banner" width="100%">
+  <img src="assets/bookscope.png" alt="Project Banner" width="100%">
 </p>
 
 # bookscope
