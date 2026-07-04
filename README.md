@@ -8,16 +8,15 @@ High-fidelity **orderbook recorder** for Polymarket prediction markets, built fo
 
 ## How it works
 
-
-
 Three loops run in parallel: the **event loop** (receive, rebuild book, record), the **main loop** (rolls to the next 5-minute market window), and the **watchdog** (kills silently-dead sockets). All reconnection funnels through one place - `ws_loop()` - with exponential backoff.
 
-## What it records
+## Architecture
 
 <p align="center">
   <img src="assets/bookscope_arch.png" alt="Bookscope Architecture" width="100%">
 </p>
 
+## it records
 Four gzipped JSONL streams, rotated hourly under `./poly_data/<date>/`:
 
 | Stream | Contents |
