@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Project Banner" width="100%">
+</p>
+
 # bookscope
 
 High-fidelity **orderbook recorder** for Polymarket prediction markets, built for market-microstructure research. It attaches to the rolling BTC 5-minute up/down markets and records every single orderbook event to disk - so you can study market-maker behavior, liquidity dynamics, and signal quality offline, on real data, instead of guessing.
